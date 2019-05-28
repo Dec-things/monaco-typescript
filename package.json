@@ -1,6 +1,6 @@
 {
   "name": "@diginet/monaco-typescript",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "description": "TypeScript and JavaScript language support for Monaco Editor",
   "scripts": {
     "compile-amd": "mcopy ./src/lib/typescriptServices-amd.js ./release/dev/lib/typescriptServices.js && tsc -p ./src/tsconfig.json",
