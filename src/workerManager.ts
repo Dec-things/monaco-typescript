@@ -73,7 +73,7 @@ export class WorkerManager {
 		}
 	}
 
-	private _getClient(): Promise<TypeScriptWorker> {
+	public getClient(): Promise<TypeScriptWorker> {
 		this._lastUsedTime = Date.now();
 
 		if (!this._client) {
@@ -110,7 +110,7 @@ export class WorkerManager {
 
 	getLanguageServiceWorker(...resources: Uri[]): Promise<TypeScriptWorker> {
 		let _client: TypeScriptWorker;
-		return this._getClient().then((client) => {
+		return this.getClient().then((client) => {
 			_client = client
 		}).then(_ => {
 			return this._worker.withSyncedResources(resources)

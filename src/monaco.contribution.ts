@@ -6,6 +6,8 @@
 
 import * as mode from './tsMode';
 
+import { createMultiFileProject } from './multiFileProject/multiFileProject'
+
 import Emitter = monaco.Emitter;
 import IEvent = monaco.IEvent;
 import IDisposable = monaco.IDisposable;
@@ -207,7 +209,8 @@ function createAPI(): typeof monaco.languages.typescript {
 		typescriptDefaults: typescriptDefaults,
 		javascriptDefaults: javascriptDefaults,
 		getTypeScriptWorker: getTypeScriptWorker,
-		getJavaScriptWorker: getJavaScriptWorker
+		getJavaScriptWorker: getJavaScriptWorker,
+		createMultiFileProject: createMultiFileProject
 	}
 }
 monaco.languages.typescript = createAPI();
@@ -218,9 +221,21 @@ function getMode(): Promise<typeof mode> {
 	return import('./tsMode');
 }
 
+const _onTypescriptWorkerCreated = new monaco.Emitter<import('./workerManager').WorkerManager>()
+export const onTypescriptWorkerCreated = _onTypescriptWorkerCreated.event
+
+const _onJavascriptWorkerCreated = new monaco.Emitter<import('./workerManager').WorkerManager>()
+export const onJavascriptWorkerCreated = _onJavascriptWorkerCreated.event
+
 monaco.languages.onLanguage('typescript', () => {
-	return getMode().then(mode => mode.setupTypeScript(typescriptDefaults));
+	return getMode().then(mode => {
+		let workerManager = mode.setupTypeScript(typescriptDefaults)
+		_onTypescriptWorkerCreated.fire(workerManager)
+	});
 });
 monaco.languages.onLanguage('javascript', () => {
-	return getMode().then(mode => mode.setupJavaScript(javascriptDefaults));
+	return getMode().then(mode => {
+		let workerManager = mode.setupJavaScript(javascriptDefaults)
+		_onJavascriptWorkerCreated.fire(workerManager)
+	});
 });

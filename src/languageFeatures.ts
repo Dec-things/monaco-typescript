@@ -7,6 +7,7 @@
 import { LanguageServiceDefaultsImpl } from './monaco.contribution';
 import * as ts from './lib/typescriptServices';
 import { TypeScriptWorker } from './tsWorker';
+import { onShouldValidate, isMultiFileMode, MultiFileProject, callTsFunction } from './multiFileProject/multiFileProject'
 
 import Uri = monaco.Uri;
 import Position = monaco.Position;
@@ -98,7 +99,9 @@ export class DiagnostcsAdapter extends Adapter {
 			let handle: number;
 			const changeSubscription = model.onDidChangeContent(() => {
 				clearTimeout(handle);
-				handle = setTimeout(() => this._doValidate(model.uri), 500);
+				if (!isMultiFileMode()) {
+					handle = setTimeout(() => this._doValidate(model.uri), 500);
+				}
 			});
 
 			this._listener[model.uri.toString()] = {
@@ -108,7 +111,9 @@ export class DiagnostcsAdapter extends Adapter {
 				}
 			};
 
-			this._doValidate(model.uri);
+			if (!isMultiFileMode()) {
+				this._doValidate(model.uri);
+			}
 		};
 
 		const onModelRemoved = (model: monaco.editor.IModel): void => {
@@ -146,11 +151,53 @@ export class DiagnostcsAdapter extends Adapter {
 		this._disposables.push(this._defaults.onDidExtraLibsChange(recomputeDiagostics));
 
 		monaco.editor.getModels().forEach(onModelAdd);
+
+		// Subscribe to multiFileProject updates
+		let timeoutMap = new Map<monaco.Uri, number>()
+		this._disposables.push(onShouldValidate((project) => {
+			clearTimeout(timeoutMap.get(project.uri))
+			timeoutMap.set(project.uri, setTimeout(() => {
+				this._doValidateMultiFileProject(project)
+			}, 500))
+		 }))
 	}
 
 	public dispose(): void {
 		this._disposables.forEach(d => d && d.dispose());
 		this._disposables = [];
+	}
+
+	private _doValidateMultiFileProject(project: MultiFileProject) {
+		this._worker(project.uri).then(worker => {
+			if (!monaco.editor.getModel(project.uri)) {
+				// model was disposed in the meantime
+				return null;
+			}
+			return callTsFunction(async () => {
+				worker.setCurrentMultiFileProject(project.id)
+				const promises: Promise<ts.Diagnostic[]>[] = [];
+				const { noSyntaxValidation, noSemanticValidation } = this._defaults.getDiagnosticsOptions();
+				if (!noSyntaxValidation) {
+					promises.push(worker.getSyntacticDiagnostics(project.uri.toString()));
+				}
+				if (!noSemanticValidation) {
+					promises.push(worker.getSemanticDiagnostics(project.uri.toString()));
+				}
+				return Promise.all(promises);
+			})
+		}).then(diagnostics => {
+			if (!diagnostics || !monaco.editor.getModel(project.uri)) {
+				// model was disposed in the meantime
+				return null;
+			}
+			const markers = diagnostics
+				.reduce((p, c) => c.concat(p), [])
+				.map(d => this._convertDiagnostics(project.uri, d));
+
+			monaco.editor.setModelMarkers(monaco.editor.getModel(project.uri), this._selector, markers);
+		}).then(undefined, err => {
+			console.error(err);
+		});
 	}
 
 	private _doValidate(resource: Uri): void {

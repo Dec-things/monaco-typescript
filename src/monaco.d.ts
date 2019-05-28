@@ -171,4 +171,48 @@ declare module monaco.languages.typescript {
 
     export var getTypeScriptWorker: () => Promise<any>;
     export var getJavaScriptWorker: () => Promise<any>;
+
+    export type Directory = {
+        files: { [filename: string]: string }
+        folders: { [dirname: string]: Directory }
+    }
+
+    export interface MultiFileProject {
+        id: string
+
+        readonly uri: Uri
+        readonly currentFile: string
+        readonly extraLib: string
+
+        readonly isDisposed: boolean
+
+        /**
+         * Create a directory.
+         */
+        mkDir(dirname: string): void
+
+        /**
+         * Remove a directory.
+         */
+        rmDir(dirname: string): void
+
+        /**
+         * Write to a file. Will create the file as well as all required directories if they don't exist.
+         */
+        writeFile(filename: string, value: string): void
+
+        /**
+         * Remove a file.
+         */
+        rmFile(filename: string): void
+
+        setCurrentFile(filename: string): void
+
+        dispose(): void
+    }
+
+    /**
+     * Create a new multi-file project. This will cause the compiler to enter multi-file mode for
+     */
+    export var createMultiFileProject: (currentFile: string, fs: { readFile: (filename: string) => Promise<string>; readAllDirs: () => Promise<Directory>; }) => MultiFileProject
 }
