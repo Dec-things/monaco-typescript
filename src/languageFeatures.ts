@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import { LanguageServiceDefaultsImpl } from './monaco.contribution';
+import { LanguageServiceDefaultsImpl, getTypescriptClient, getJavascriptClient } from './monaco.contribution';
 import * as ts from './lib/typescriptServices';
 import { TypeScriptWorker } from './tsWorker';
-import { onShouldValidate, isMultiFileMode, MultiFileProject, callTsFunction } from './multiFileProject/multiFileProject'
+import { onShouldValidate, isMultiFileMode, MultiFileProject, callTsFunction, multiFileProjects, setCurrentMultiFileProject, currentMultiFileProject } from './multiFileProject/multiFileProject'
 
 import Uri = monaco.Uri;
 import Position = monaco.Position;
@@ -61,11 +61,55 @@ export abstract class Adapter {
 	}
 
 	protected _positionToOffset(uri: Uri, position: monaco.IPosition): number {
+		if (isMultiFileMode()) {
+			let text: string
+			for (let project of multiFileProjects) {
+				if (project.id === currentMultiFileProject) {
+					text = project.getFileValue(uri.toString())
+					break
+				}
+			}
+
+			if (!text) {
+				return 0
+			}
+
+			let lines = text.split('\n')
+			let counter = 0
+			for (let i = 0; i < position.lineNumber - 1; i++) {
+				counter += lines[i].length + 1
+			}
+			return counter + position.column - 1
+		}
 		let model = monaco.editor.getModel(uri);
 		return model.getOffsetAt(position);
 	}
 
 	protected _offsetToPosition(uri: Uri, offset: number): monaco.IPosition {
+		if (isMultiFileMode()) {
+			let text: string
+			for (let project of multiFileProjects) {
+				if (project.id === currentMultiFileProject) {
+					text = project.getFileValue(uri.toString())
+					break
+				}
+			}
+
+			if (!text) {
+				return new monaco.Position(1, 1)
+			}
+
+			let lines = text.split('\n')
+			let counter = offset
+			for (let i = 0; i < lines.length; i++) {
+				let length = lines[i].length
+				if (counter <= length) {
+					return new monaco.Position(i + 1, counter + 1)
+				}
+				counter -= (length + 1)
+			}
+			return { lineNumber: lines.length, column: lines[lines.length - 1].length + 1 }
+		}
 		let model = monaco.editor.getModel(uri);
 		return model.getPositionAt(offset);
 	}
@@ -152,14 +196,24 @@ export class DiagnostcsAdapter extends Adapter {
 
 		monaco.editor.getModels().forEach(onModelAdd);
 
-		// Subscribe to multiFileProject updates
-		let timeoutMap = new Map<monaco.Uri, number>()
-		this._disposables.push(onShouldValidate((project) => {
-			clearTimeout(timeoutMap.get(project.uri))
-			timeoutMap.set(project.uri, setTimeout(() => {
-				this._doValidateMultiFileProject(project)
+		let validateProject = (project: MultiFileProject) => {
+			clearTimeout(timeoutMap.get(project))
+			timeoutMap.set(project, setTimeout(() => {
+				this._doValidate(project)
 			}, 500))
-		 }))
+		}
+
+		// Subscribe to multiFileProject updates
+		let timeoutMap = new Map<MultiFileProject, number>()
+		this._disposables.push(onShouldValidate(validateProject))
+		multiFileProjects.forEach(validateProject)
+	}
+
+	private getClient() {
+		if (this._selector === 'typescript') {
+			return getTypescriptClient()
+		}
+		return getJavascriptClient()
 	}
 
 	public dispose(): void {
@@ -167,64 +221,46 @@ export class DiagnostcsAdapter extends Adapter {
 		this._disposables = [];
 	}
 
-	private _doValidateMultiFileProject(project: MultiFileProject) {
-		this._worker(project.uri).then(worker => {
-			if (!monaco.editor.getModel(project.uri)) {
+	private _doValidate(resource: Uri | MultiFileProject): void {
+		if (resource instanceof MultiFileProject) {
+			if (!resource.currentFile) {
+				return
+			}
+			var uri = resource.currentFile
+		}
+		else {
+			var uri = resource
+		}
+		this._worker(uri).then(worker => {
+			if (!monaco.editor.getModel(uri)) {
 				// model was disposed in the meantime
 				return null;
 			}
-			return callTsFunction(async () => {
-				worker.setCurrentMultiFileProject(project.id)
+			return callTsFunction(() => {
+				if (resource instanceof MultiFileProject) {
+					setCurrentMultiFileProject(resource.id)
+				}
 				const promises: Promise<ts.Diagnostic[]>[] = [];
 				const { noSyntaxValidation, noSemanticValidation } = this._defaults.getDiagnosticsOptions();
 				if (!noSyntaxValidation) {
-					promises.push(worker.getSyntacticDiagnostics(project.uri.toString()));
+					promises.push(worker.getSyntacticDiagnostics(uri.toString()));
 				}
 				if (!noSemanticValidation) {
-					promises.push(worker.getSemanticDiagnostics(project.uri.toString()));
+					promises.push(worker.getSemanticDiagnostics(uri.toString()));
 				}
 				return Promise.all(promises);
 			})
 		}).then(diagnostics => {
-			if (!diagnostics || !monaco.editor.getModel(project.uri)) {
+			let model = monaco.editor.getModel(uri)
+			if (!diagnostics || !model || model.getModeId() !== this._selector) {
 				// model was disposed in the meantime
 				return null;
 			}
 			const markers = diagnostics
 				.reduce((p, c) => c.concat(p), [])
-				.map(d => this._convertDiagnostics(project.uri, d));
+				.map(d => this._convertDiagnostics(uri, d));
 
-			monaco.editor.setModelMarkers(monaco.editor.getModel(project.uri), this._selector, markers);
-		}).then(undefined, err => {
-			console.error(err);
-		});
-	}
-
-	private _doValidate(resource: Uri): void {
-		this._worker(resource).then(worker => {
-			if (!monaco.editor.getModel(resource)) {
-				// model was disposed in the meantime
-				return null;
-			}
-			const promises: Promise<ts.Diagnostic[]>[] = [];
-			const { noSyntaxValidation, noSemanticValidation } = this._defaults.getDiagnosticsOptions();
-			if (!noSyntaxValidation) {
-				promises.push(worker.getSyntacticDiagnostics(resource.toString()));
-			}
-			if (!noSemanticValidation) {
-				promises.push(worker.getSemanticDiagnostics(resource.toString()));
-			}
-			return Promise.all(promises);
-		}).then(diagnostics => {
-			if (!diagnostics || !monaco.editor.getModel(resource)) {
-				// model was disposed in the meantime
-				return null;
-			}
-			const markers = diagnostics
-				.reduce((p, c) => c.concat(p), [])
-				.map(d => this._convertDiagnostics(resource, d));
-
-			monaco.editor.setModelMarkers(monaco.editor.getModel(resource), this._selector, markers);
+			monaco.editor.setModelMarkers(monaco.editor.getModel(uri), this._selector, markers);
 		}).then(undefined, err => {
 			console.error(err);
 		});
@@ -265,7 +301,9 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const offset = this._positionToOffset(resource, position);
 
 		return this._worker(resource).then(worker => {
-			return worker.getCompletionsAtPosition(resource.toString(), offset);
+			return callTsFunction(() => {
+				return worker.getCompletionsAtPosition(resource.toString(), offset);
+			})
 		}).then(info => {
 			if (!info) {
 				return;
@@ -301,10 +339,11 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const position = myItem.position;
 
 		return this._worker(resource).then(worker => {
-			return worker.getCompletionEntryDetails(resource.toString(),
+			return callTsFunction(() => {
+				return worker.getCompletionEntryDetails(resource.toString(),
 				this._positionToOffset(resource, position),
 				myItem.label);
-
+			})
 		}).then(details => {
 			if (!details) {
 				return myItem;
@@ -362,7 +401,11 @@ export class SignatureHelpAdapter extends Adapter implements monaco.languages.Si
 
 	provideSignatureHelp(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.SignatureHelp> {
 		let resource = model.uri;
-		return this._worker(resource).then(worker => worker.getSignatureHelpItems(resource.toString(), this._positionToOffset(resource, position))).then(info => {
+		return this._worker(resource).then(worker => {
+			return callTsFunction(() => {
+				return worker.getSignatureHelpItems(resource.toString(), this._positionToOffset(resource, position))
+			})
+		}).then(info => {
 
 			if (!info) {
 				return;
@@ -413,7 +456,9 @@ export class QuickInfoAdapter extends Adapter implements monaco.languages.HoverP
 		let resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getQuickInfoAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			return callTsFunction(() => {
+				return worker.getQuickInfoAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			})
 		}).then(info => {
 			if (!info) {
 				return;
@@ -448,7 +493,9 @@ export class OccurrencesAdapter extends Adapter implements monaco.languages.Docu
 		const resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getOccurrencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			return callTsFunction(() => {
+				return worker.getOccurrencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			})
 		}).then(entries => {
 			if (!entries) {
 				return;
@@ -471,7 +518,9 @@ export class DefinitionAdapter extends Adapter {
 		const resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getDefinitionAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			return callTsFunction(() => {
+				return worker.getDefinitionAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			})
 		}).then(entries => {
 			if (!entries) {
 				return;
@@ -479,12 +528,10 @@ export class DefinitionAdapter extends Adapter {
 			const result: monaco.languages.Location[] = [];
 			for (let entry of entries) {
 				const uri = Uri.parse(entry.fileName);
-				if (monaco.editor.getModel(uri)) {
-					result.push({
-						uri: uri,
-						range: this._textSpanToRange(uri, entry.textSpan)
-					});
-				}
+				result.push({
+					uri: uri,
+					range: this._textSpanToRange(uri, entry.textSpan)
+				});
 			}
 			return result;
 		});
@@ -499,7 +546,9 @@ export class ReferenceAdapter extends Adapter implements monaco.languages.Refere
 		const resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getReferencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			return callTsFunction(() => {
+				return worker.getReferencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+			})
 		}).then(entries => {
 			if (!entries) {
 				return;
@@ -526,7 +575,11 @@ export class OutlineAdapter extends Adapter implements monaco.languages.Document
 	public provideDocumentSymbols(model: monaco.editor.IReadOnlyModel, token: CancellationToken): Thenable<monaco.languages.DocumentSymbol[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => worker.getNavigationBarItems(resource.toString())).then(items => {
+		return this._worker(resource).then(worker => {
+			return callTsFunction(() => {
+				return worker.getNavigationBarItems(resource.toString())
+			})
+		}).then(items => {
 			if (!items) {
 				return;
 			}
@@ -641,10 +694,13 @@ export class FormatAdapter extends FormatHelper implements monaco.languages.Docu
 		const resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getFormattingEditsForRange(resource.toString(),
-				this._positionToOffset(resource, { lineNumber: range.startLineNumber, column: range.startColumn }),
-				this._positionToOffset(resource, { lineNumber: range.endLineNumber, column: range.endColumn }),
-				FormatHelper._convertOptions(options));
+			return callTsFunction(() => {
+				return worker.getFormattingEditsForRange(resource.toString(),
+					this._positionToOffset(resource, { lineNumber: range.startLineNumber, column: range.startColumn }),
+					this._positionToOffset(resource, { lineNumber: range.endLineNumber, column: range.endColumn }),
+					FormatHelper._convertOptions(options)
+				);
+			})
 		}).then(edits => {
 			if (edits) {
 				return edits.map(edit => this._convertTextChanges(resource, edit));
@@ -663,9 +719,11 @@ export class FormatOnTypeAdapter extends FormatHelper implements monaco.language
 		const resource = model.uri;
 
 		return this._worker(resource).then(worker => {
-			return worker.getFormattingEditsAfterKeystroke(resource.toString(),
-				this._positionToOffset(resource, position),
-				ch, FormatHelper._convertOptions(options));
+			return callTsFunction(() => {
+				return worker.getFormattingEditsAfterKeystroke(resource.toString(),
+					this._positionToOffset(resource, position),
+					ch, FormatHelper._convertOptions(options));
+			})
 		}).then(edits => {
 			if (edits) {
 				return edits.map(edit => this._convertTextChanges(resource, edit));

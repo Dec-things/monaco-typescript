@@ -9,6 +9,7 @@ import { TypeScriptWorker } from './tsWorker';
 
 import IDisposable = monaco.IDisposable;
 import Uri = monaco.Uri;
+import { MultiFileProject, multiFileProjects, onMultiFileProjectCreated, currentMultiFileProject } from './multiFileProject/multiFileProject';
 
 export class WorkerManager {
 
@@ -21,7 +22,7 @@ export class WorkerManager {
 	private _extraLibsChangeListener: IDisposable;
 
 	private _worker: monaco.editor.MonacoWebWorker<TypeScriptWorker>;
-	private _client: Promise<TypeScriptWorker>;
+	public client: Promise<TypeScriptWorker>;
 
 	constructor(modeId: string, defaults: LanguageServiceDefaultsImpl) {
 		this._modeId = modeId;
@@ -39,7 +40,7 @@ export class WorkerManager {
 			this._worker.dispose();
 			this._worker = null;
 		}
-		this._client = null;
+		this.client = null;
 	}
 
 	dispose(): void {
@@ -47,6 +48,7 @@ export class WorkerManager {
 		this._configChangeListener.dispose();
 		this._extraLibsChangeListener.dispose();
 		this._stopWorker();
+		this.disposeClient()
 	}
 
 	private async _updateExtraLibs(): Promise<void> {
@@ -73,10 +75,11 @@ export class WorkerManager {
 		}
 	}
 
-	public getClient(): Promise<TypeScriptWorker> {
+	private disposeClient = () => {}
+	private _getClient(): Promise<TypeScriptWorker> {
 		this._lastUsedTime = Date.now();
 
-		if (!this._client) {
+		if (!this.client) {
 			this._worker = monaco.editor.createWebWorker<TypeScriptWorker>({
 
 				// module that exports the create() method and returns a `TypeScriptWorker` instance
@@ -91,7 +94,38 @@ export class WorkerManager {
 				}
 			});
 
-			let p = <Promise<TypeScriptWorker>>this._worker.getProxy();
+			let p = new Promise<TypeScriptWorker>(async resolve => {
+				this.disposeClient()
+
+				let cancelled = false
+				this.disposeClient = () => {
+					cancelled = true
+					onCreatedListener.dispose()
+				}
+
+				let client = await this._worker.getProxy()
+
+				async function register(project: MultiFileProject) {
+                    let dir = await project.fs.readAllDirs();
+                    if (cancelled || project.isDisposed) {
+                        return;
+                    }
+                    client.registerMultiFileProject(project.id, project.currentFile.toString(), dir.map((element) => { return { uri: element.uri.toString(), value: element.value } }), project.extraLib);
+                }
+                await Promise.all(
+                    multiFileProjects.map(project => {
+                        return register(project);
+                    })
+				);
+				if (currentMultiFileProject) {
+					await client.setCurrentMultiFileProject(currentMultiFileProject)
+				}
+                let onCreatedListener = onMultiFileProjectCreated(project => {
+                    register(project);
+				});
+
+				resolve(client)
+			})
 
 			if (this._defaults.getEagerModelSync()) {
 				p = p.then(worker => {
@@ -102,15 +136,15 @@ export class WorkerManager {
 				})
 			}
 
-			this._client = p;
+			this.client = p;
 		}
 
-		return this._client;
+		return this.client;
 	}
 
 	getLanguageServiceWorker(...resources: Uri[]): Promise<TypeScriptWorker> {
 		let _client: TypeScriptWorker;
-		return this.getClient().then((client) => {
+		return this._getClient().then((client) => {
 			_client = client
 		}).then(_ => {
 			return this._worker.withSyncedResources(resources)

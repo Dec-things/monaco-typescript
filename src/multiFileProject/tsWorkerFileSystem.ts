@@ -1,42 +1,48 @@
 import { path } from './path'
-import { Directory } from '../Directory';
+
+type Directory = {
+    files: { [filename: string]: string }
+    folders: { [dirname: string]: Directory }
+}
 
 export class WorkerFileSystem {
 
     public fileVersions: { [filename: string]: number } = {}
+    public mainDir: Directory
 
-    constructor(public mainDir: Directory = { files: {}, folders: {} }) {
+    constructor(dir: { uri: string, value: string }[]) {
+        this.mainDir = { folders: {}, files: {} }
+        dir.forEach((element) => {
+            this.writeFile(element.uri, element.value)
+        })
     }
 
     public exists(filename: string): boolean {
-        if (filename.substr(0, 8) === 'file:///') {
-            filename = filename.substr(8)
-        }
-        let dirname = path.dirname(filename)
-        let dir = this.mainDir
-        if (dirname !== ".") {
-            let dirs = dirname.split("/")
-            for (let subDir of dirs) {
-                if (dir.folders.hasOwnProperty(subDir)) {
-                    dir = dir.folders[subDir]
-                }
-                else {
-                    return false
-                }
-            }
-        }
-        return dir.files.hasOwnProperty(path.basename(filename))
-    }
-    public directoryExists(dirname: string): boolean {
-        if (dirname.substr(0, 8) === 'file:///') {
-            dirname = dirname.substr(8)
-        }
-        if (dirname === "") {
-            return true
-        }
+        let shortFilename = filename.substr(7)
+        let dirname = path.dirname(shortFilename)
         let dirs = dirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
+            if (dir.folders.hasOwnProperty(subDir)) {
+                dir = dir.folders[subDir]
+            }
+            else {
+                return false
+            }
+        }
+        return dir.files.hasOwnProperty(path.basename(shortFilename))
+    }
+    public directoryExists(dirname: string): boolean {
+        let shortDirname = dirname.substr(7)
+        let dirs = shortDirname.split("/")
+        let dir = this.mainDir
+        for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (dir.folders.hasOwnProperty(subDir)) {
                 dir = dir.folders[subDir]
             }
@@ -47,12 +53,16 @@ export class WorkerFileSystem {
         return true
     }
 
-    public mkDir(dirname: string, createRecursively?: boolean) {
-        let dirs = (dirname === "" || dirname === ".") ? [] : dirname.split("/")
+    public mkDir(dirname: string) {
+        let shortDirname = dirname.substr(7)
+        let dirs = shortDirname.split("/")
         let dir = this.mainDir
         let index = 0
         for (let subDir of dirs) {
             index++
+            if (subDir === '') {
+                continue
+            }
             if (index === dirs.length) {
                 if (!dir.folders.hasOwnProperty(subDir)) {
                     dir.folders[subDir] = { files: {}, folders: {} }
@@ -60,23 +70,22 @@ export class WorkerFileSystem {
                 return
             }
             if (!dir.folders.hasOwnProperty(subDir)) {
-                if (createRecursively) {
-                    dir.folders[subDir] = { files: {}, folders: {} }
-                }
-                else {
-                    throw new Error("Could not create directory: " + dirname + ". The parent directory does not exist")
-                }
+                dir.folders[subDir] = { files: {}, folders: {} }
             }
             dir = dir.folders[subDir]
         }
     }
 
     public rmDir(dirname: string) {
-        let dirs = (dirname === "" || dirname === ".") ? [] : dirname.split("/")
+        let shortDirname = dirname.substr(7)
+        let dirs = shortDirname.split("/")
         let dir = this.mainDir
         let index = 0
         for (let subDir of dirs) {
             index++
+            if (subDir === '') {
+                continue
+            }
             if (index === dirs.length) {
                 if (dir.folders.hasOwnProperty(subDir)) {
                     delete dir.folders[subDir]
@@ -91,16 +100,20 @@ export class WorkerFileSystem {
     }
 
     public writeFile(filename: string, value: string) {
-        let dirname = path.dirname(filename)
-        let dirs = dirname === "." ? [] : dirname.split("/")
+        let shortFilename = filename.substr(7)
+        let dirname = path.dirname(shortFilename)
+        let dirs = dirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (!dir.folders.hasOwnProperty(subDir)) {
                 dir.folders[subDir] = { files: {}, folders: {} }
             }
             dir = dir.folders[subDir]
         }
-        let basename = path.basename(filename)
+        let basename = path.basename(shortFilename)
         if (dir.files.hasOwnProperty(basename)) {
             dir.files[basename] = value
             this.fileVersions[filename] = (this.fileVersions[filename] || 0) + 1
@@ -111,10 +124,14 @@ export class WorkerFileSystem {
     }
 
     public rmFile(filename: string) {
-        let dirname = path.dirname(filename)
+        let shortFilename = filename.substring(7)
+        let dirname = path.dirname(shortFilename)
         let dirs = dirname === "." ? [] : dirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (dir.folders.hasOwnProperty(subDir)) {
                 dir = dir.folders[subDir]
             }
@@ -122,7 +139,7 @@ export class WorkerFileSystem {
                 throw new Error("Could not remove file: " + filename + ". The file does not exist.")
             }
         }
-        let basename = path.basename(filename)
+        let basename = path.basename(shortFilename)
         if (dir.files.hasOwnProperty(basename)) {
             delete dir.files[basename]
             delete this.fileVersions[filename]
@@ -131,13 +148,14 @@ export class WorkerFileSystem {
     }
 
     public getFile(filename: string): { notFound?: boolean, notLoaded?: boolean, value?: string } {
-        if (filename.substr(0, 8) === 'file:///') {
-            filename = filename.substr(8)
-        }
-        let dirname = path.dirname(filename)
+        let shortFilename = filename.substr(7)
+        let dirname = path.dirname(shortFilename)
         let dirs = dirname === "." ? [] : dirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (dir.folders.hasOwnProperty(subDir)) {
                 dir = dir.folders[subDir]
             }
@@ -145,7 +163,7 @@ export class WorkerFileSystem {
                 return { notFound: true }
             }
         }
-        let basename = path.basename(filename)
+        let basename = path.basename(shortFilename)
         if (dir.files.hasOwnProperty(basename)) {
             let value = dir.files[basename]
             if (value === null) {
@@ -156,13 +174,14 @@ export class WorkerFileSystem {
         return { notFound: true }
     }
 
-    public readDirectory(dirname: string, extensions: string[], exclude, include) {
-        if (dirname.substr(0, 8) === 'file:///') {
-            dirname = dirname.substr(8)
-        }
-        let dirs = (dirname === "." || dirname === "") ? [] : dirname.split("/")
+    public readDirectory(dirname: string, extensions: string[], exclude?: string[], include?: string[], depth?: number) {
+        let shortDirname = dirname.substr(7)
+        let dirs = shortDirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (dir.folders.hasOwnProperty(subDir)) {
                 dir = dir.folders[subDir]
             }
@@ -176,12 +195,13 @@ export class WorkerFileSystem {
     }
 
     public getDirectories(dirname: string) {
-        if (dirname.substr(0, 8) === 'file:///') {
-            dirname = dirname.substr(8)
-        }
-        let dirs = (dirname === "." || dirname === "") ? [] : dirname.split("/")
+        let shortDirname = dirname.substr(7)
+        let dirs = shortDirname.split("/")
         let dir = this.mainDir
         for (let subDir of dirs) {
+            if (subDir === '') {
+                continue
+            }
             if (dir.folders.hasOwnProperty(subDir)) {
                 dir = dir.folders[subDir]
             }

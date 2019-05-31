@@ -11,7 +11,6 @@ import { IExtraLibs } from "./monaco.contribution";
 import { WorkerFileSystem } from "./multiFileProject/tsWorkerFileSystem";
 
 import IWorkerContext = monaco.worker.IWorkerContext;
-import { Directory } from "./Directory";
 
 const DEFAULT_LIB = {
     NAME: "defaultLib:lib.d.ts",
@@ -30,6 +29,15 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     private _extraLibs: IExtraLibs = Object.create(null);
     private _languageService = ts.createLanguageService(this);
     private _compilerOptions: ts.CompilerOptions;
+
+    constructor(ctx: IWorkerContext, createData: ICreateData) {
+        this._ctx = ctx;
+        this._compilerOptions = createData.compilerOptions;
+        this._extraLibs = createData.extraLibs;
+    }
+
+    // --- multi file project ------------------
+
     private _multiFileProjects = new Map<
         string,
         {
@@ -41,17 +49,9 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     >();
     private _currentMultiFileProject: string = null;
 
-    constructor(ctx: IWorkerContext, createData: ICreateData) {
-        this._ctx = ctx;
-        this._compilerOptions = createData.compilerOptions;
-        this._extraLibs = createData.extraLibs;
-    }
-
-    // --- multi file project ------------------
-
-    registerMultiFileProject(id: string, currentFile: string, directory: Directory, extraLib: string): Promise<void> {
+    registerMultiFileProject(id: string, currentFile: string, dir: { uri: string, value: string }[], extraLib: string): Promise<void> {
         this._multiFileProjects.set(id, {
-            fs: new WorkerFileSystem(directory),
+            fs: new WorkerFileSystem(dir),
             extraLib,
             extraFilesToCompile: new Set(),
             currentFile
@@ -79,7 +79,7 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
 
     mkDir(id: string, dirname: string) {
         let project = this._multiFileProjects.get(id);
-        project.fs.mkDir(dirname, true);
+        project.fs.mkDir(dirname);
     }
 
     rmDir(id: string, dirname: string) {
@@ -226,6 +226,38 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
 
     isDefaultLibFileName(fileName: string): boolean {
         return fileName === this.getDefaultLibFileName(this._compilerOptions);
+    }
+
+    fileExists(filename: string) {
+        if (this._currentMultiFileProject) {
+            let project = this._multiFileProjects.get(this._currentMultiFileProject);
+            return project.fs.exists(filename)
+        }
+        throw "Bla"
+    }
+
+    directoryExists(directoryName: string) {
+        if (this._currentMultiFileProject) {
+            let project = this._multiFileProjects.get(this._currentMultiFileProject);
+            return project.fs.directoryExists(directoryName)
+        }
+        throw "Bla"
+    }
+
+    getDirectories(directoryName: string) {
+        if (this._currentMultiFileProject) {
+            let project = this._multiFileProjects.get(this._currentMultiFileProject);
+            return project.fs.getDirectories(directoryName)
+        }
+        throw "Bla"
+    }
+
+    readDirectory(path: string, extensions: string[], exclude?: string[], include?: string[], depth?: number) {
+        if (this._currentMultiFileProject) {
+            let project = this._multiFileProjects.get(this._currentMultiFileProject);
+            return project.fs.readDirectory(path, extensions, exclude, include, depth)
+        }
+        throw "Bla"
     }
 
     // --- language features
