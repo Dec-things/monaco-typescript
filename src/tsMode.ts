@@ -14,13 +14,13 @@ import Uri = monaco.Uri
 let javaScriptWorker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker>
 let typeScriptWorker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker>
 
-export function setupTypeScript(defaults: LanguageServiceDefaultsImpl): WorkerManager {
+export function setupTypeScript(defaults: LanguageServiceDefaultsImpl) {
 	let mode = setupMode(defaults, 'typescript')
 	typeScriptWorker = mode.worker
 	return mode.client
 }
 
-export function setupJavaScript(defaults: LanguageServiceDefaultsImpl): WorkerManager {
+export function setupJavaScript(defaults: LanguageServiceDefaultsImpl) {
 	let mode = setupMode(defaults, 'javascript')
 	javaScriptWorker = mode.worker
 	return mode.client

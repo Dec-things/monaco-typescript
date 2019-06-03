@@ -24,7 +24,7 @@ enum IndentStyle {
 	Smart = 2
 }
 
-function flattenDiagnosticMessageText(messageText: string | ts.DiagnosticMessageChain, newLine: '\n'): string {
+export function flattenDiagnosticMessageText(messageText: string | ts.DiagnosticMessageChain, newLine: '\n'): string {
 	if (typeof messageText === "string") {
 		return messageText;
 	} else {
@@ -62,24 +62,12 @@ export abstract class Adapter {
 
 	protected _positionToOffset(uri: Uri, position: monaco.IPosition): number {
 		if (isMultiFileMode()) {
-			let text: string
 			for (let project of multiFileProjects) {
 				if (project.id === currentMultiFileProject) {
-					text = project.getFileValue(uri.toString())
-					break
+					return project.positionToOffset(uri, position) || 0
 				}
 			}
-
-			if (!text) {
-				return 0
-			}
-
-			let lines = text.split('\n')
-			let counter = 0
-			for (let i = 0; i < position.lineNumber - 1; i++) {
-				counter += lines[i].length + 1
-			}
-			return counter + position.column - 1
+			return 0
 		}
 		let model = monaco.editor.getModel(uri);
 		return model.getOffsetAt(position);
@@ -96,7 +84,7 @@ export abstract class Adapter {
 			}
 
 			if (!text) {
-				return new monaco.Position(1, 1)
+				return { lineNumber: 1, column: 1 }
 			}
 
 			let lines = text.split('\n')
@@ -207,13 +195,6 @@ export class DiagnostcsAdapter extends Adapter {
 		let timeoutMap = new Map<MultiFileProject, number>()
 		this._disposables.push(onShouldValidate(validateProject))
 		multiFileProjects.forEach(validateProject)
-	}
-
-	private getClient() {
-		if (this._selector === 'typescript') {
-			return getTypescriptClient()
-		}
-		return getJavascriptClient()
 	}
 
 	public dispose(): void {

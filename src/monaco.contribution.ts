@@ -193,12 +193,12 @@ enum ModuleResolutionKind {
 }
 //#endregion
 
-const typescriptDefaults = new LanguageServiceDefaultsImpl(
+export const typescriptDefaults = new LanguageServiceDefaultsImpl(
     { allowNonTsExtensions: true, target: ScriptTarget.Latest },
     { noSemanticValidation: false, noSyntaxValidation: false }
 );
 
-const javascriptDefaults = new LanguageServiceDefaultsImpl(
+export const javascriptDefaults = new LanguageServiceDefaultsImpl(
     { allowNonTsExtensions: true, allowJs: true, target: ScriptTarget.Latest },
     { noSemanticValidation: true, noSyntaxValidation: false }
 );

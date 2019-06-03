@@ -43,7 +43,7 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
         {
             fs: WorkerFileSystem;
             extraLib: string;
-            extraFilesToCompile: Set<string>;
+            extraFilesToCompile: Map<string, string>;
             currentFile: string;
         }
     >();
@@ -53,7 +53,7 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
         this._multiFileProjects.set(id, {
             fs: new WorkerFileSystem(dir),
             extraLib,
-            extraFilesToCompile: new Set(),
+            extraFilesToCompile: new Map(),
             currentFile
         });
         return Promise.resolve();
@@ -97,6 +97,16 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
         project.currentFile = filename;
     }
 
+    addExtraFileToCompile(id: string, fileId: string, filename: string) {
+        let project = this._multiFileProjects.get(id);
+        project.extraFilesToCompile.set(fileId, filename)
+    }
+
+    removeExtraFileToCompile(id: string, fileId: string) {
+        let project = this._multiFileProjects.get(id);
+        project.extraFilesToCompile.delete(fileId)
+    }
+
     // --- language service host ---------------
 
     getCompilationSettings(): ts.CompilerOptions {
@@ -106,10 +116,15 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     getScriptFileNames(): string[] {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            let arr = [project.currentFile];
-            project.extraFilesToCompile.forEach(element => {
-                arr.push(element);
+            let set = new Set<string>()
+            if (project.currentFile) {
+                set.add(project.currentFile)
+            }
+            project.extraFilesToCompile.forEach((value) => {
+                set.add(value);
             });
+            let arr = [];
+            set.forEach(element => arr.push(element))
             return arr;
         } else {
             let models = this._ctx.getMirrorModels().map(model => model.uri.toString());
