@@ -243,7 +243,7 @@ export function getTypescriptClient(): Promise<TypeScriptWorker> {
         }
         return tsWorkerManagerPromise.then(_ => tsWorkerManager.client)
     }
-    return tsWorkerManager.client
+    return tsWorkerManager.client || Promise.resolve(null)
 }
 
 let jsWorkerManagerPromise: Promise<void> = null
@@ -255,7 +255,7 @@ export function getJavascriptClient(): Promise<TypeScriptWorker> {
         }
         return jsWorkerManagerPromise.then(_ => tsWorkerManager.client)
     }
-    return jsWorkerManager.client
+    return jsWorkerManager.client || Promise.resolve(null)
 }
 
 monaco.languages.onLanguage("typescript", () => {

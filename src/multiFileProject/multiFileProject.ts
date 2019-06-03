@@ -2,15 +2,13 @@ import Emitter = monaco.Emitter;
 import Uri = monaco.Uri;
 
 import { onRequestReadFile } from "./interceptWorker";
-import { getTypescriptClient, getJavascriptClient, typescriptDefaults, javascriptDefaults } from "../monaco.contribution";
-import { path } from "./path";
-import { flattenDiagnosticMessageText } from "../languageFeatures";
+import { getTypescriptClient, getJavascriptClient } from "../monaco.contribution";
 
 export const multiFileProjects: MultiFileProject[] = [];
 const _onMultiFileProjectCreated = new Emitter<MultiFileProject>();
 export const onMultiFileProjectCreated = _onMultiFileProjectCreated.event;
 
-const _onShouldValidate = new Emitter<MultiFileProject>();
+const _onShouldValidate = new Emitter<{ project: MultiFileProject, uri: monaco.Uri }>();
 export const onShouldValidate = _onShouldValidate.event;
 
 let tsUpdatePromise: Promise<void>;
@@ -20,9 +18,6 @@ let tsUpdatePromise: Promise<void>;
  * This function makes sure to call the given function until the worker does not report that it needs to update.
  */
 export async function callTsFunction<T = any>(f: () => Promise<T> | T): Promise<T> {
-    if (!isMultiFileMode()) {
-        return f();
-    }
     let first = true;
     while (first || tsUpdatePromise) {
         first = false;
@@ -80,15 +75,20 @@ export function createMultiFileProject(fs: {
     return new MultiFileProject(fs);
 }
 
-export function isMultiFileMode() {
-    return Boolean(currentMultiFileProject);
-}
-
 export let currentMultiFileProject: string = null;
-export async function setCurrentMultiFileProject(id: string) {
+export function setCurrentMultiFileProject(id: string) {
     currentMultiFileProject = id;
     getTypescriptClient().then(client => client && client.setCurrentMultiFileProject(id));
     getJavascriptClient().then(client => client && client.setCurrentMultiFileProject(id));
+}
+
+export function getCurrentMultiFileProject() {
+    for (let project of multiFileProjects) {
+        if (project.id === currentMultiFileProject) {
+            return project
+        }
+    }
+    return null
 }
 
 export class MultiFileProject {
@@ -112,6 +112,9 @@ export class MultiFileProject {
         }
     }
 
+    _onModelMarkers = new Emitter<{ uri: Uri, markers: monaco.editor.IMarkerData[] }>()
+    public onModelMarkers = this._onModelMarkers.event
+
     private _fileValues = new Map<string, string>();
 
     constructor(
@@ -125,15 +128,37 @@ export class MultiFileProject {
         _onMultiFileProjectCreated.fire(this);
     }
 
+    private _registerPromise: Promise<{ uri: Uri, value: string }[]>;
+    async awaitRegister() {
+        let initPromise: any
+        while (initPromise !== this._registerPromise) {
+            initPromise = this._registerPromise
+            await this._registerPromise
+        }
+    }
+
+    async register() {
+        this._registerPromise = new Promise<any>(async resolve => {
+            let dirs = await this.fs.readAllDirs();
+            if (this.isDisposed) {
+                return;
+            }
+            resolve(dirs)
+        });
+        return this._registerPromise
+    }
+
     /**
      * Write to a file. Will create the file as well as all required directories if they don't exist.
      */
-    async writeFile(uri: monaco.Uri, value: string) {
+    async writeFile(uri: Uri, value: string) {
         this.assertNotDisposed();
 
         let uriString = uri.toString();
 
         this._fileValues.set(uriString, value);
+
+        await this.awaitRegister()
 
         let tsWorker = await getTypescriptClient();
         if (this.isDisposed) {
@@ -149,7 +174,9 @@ export class MultiFileProject {
         if (jsWorker) {
             jsWorker.setFile(this.id, uriString, value);
         }
-        _onShouldValidate.fire(this);
+        if (this.currentFile) {
+            _onShouldValidate.fire({ project: this, uri: this.currentFile });
+        }
     }
 
     /**
@@ -159,6 +186,8 @@ export class MultiFileProject {
         this.assertNotDisposed();
 
         let uriString = uri.toString();
+
+        await this.awaitRegister()
 
         let tsWorker = await getTypescriptClient();
         if (this.isDisposed) {
@@ -177,7 +206,9 @@ export class MultiFileProject {
 
         this._fileValues.delete(uriString);
 
-        _onShouldValidate.fire(this);
+        if (this.currentFile) {
+            _onShouldValidate.fire({ project: this, uri: this.currentFile });
+        }
     }
 
     /**
@@ -189,6 +220,8 @@ export class MultiFileProject {
         let uriString = uri ? uri.toString() : null;
 
         this._currentFile = uri || null;
+
+        await this.awaitRegister()
 
         let tsWorker = await getTypescriptClient();
         if (this.isDisposed) {
@@ -205,125 +238,64 @@ export class MultiFileProject {
             jsWorker.setCurrentFile(this.id, uriString);
         }
 
-        _onShouldValidate.fire(this);
+        if (this.currentFile) {
+            _onShouldValidate.fire({ project: this, uri: this.currentFile });
+        }
     }
 
     public offsetToPosition(uri: Uri, offset: number): monaco.IPosition {
-        let text = this._fileValues.get(uri.toString())
+        let text = this._fileValues.get(uri.toString());
 
         if (!text) {
-            return null
-        }
-
-        if (offset > text.length) {
-            let numLines = (text.match(/\n/g)||[]).length + 1
-            return {
-                lineNumber: numLines, column: text.length - text.lastIndexOf('\n')
-            }
-        }
-
-        let totalLength = 0
-        let line = 1
-        let counter = offset
-        while (true) {
-            let length = text.indexOf('\n', totalLength)
-            if (length >= counter) {
-                return { lineNumber: line, column: counter + 1 }
-            }
-            totalLength += length
-            line++
-            counter -= length + 1
-        }
-    }
-
-    public positionToOffset(uri: Uri, position: monaco.IPosition): number {
-        let text = this._fileValues.get(uri.toString())
-
-        if (!text) {
-            return null
-        }
-
-        let lines = text.split('\n')
-
-        let ln = position.lineNumber - 1
-        let c = position.column - 1
-
-        // handle the two cases where position might be greater than text length
-        if (ln === lines.length - 1) {
-            let lastLineLength = lines[lines.length - 1].length
-            let actualColumn = Math.min(c, lastLineLength)
-            return text.length - lastLineLength + actualColumn
-        }
-        if (ln > lines.length - 1) {
-            return text.length
-        }
-
-        let counter = 0
-        for (let i = 0; i < position.lineNumber - 1; i++) {
-            counter += lines[i].length + 1
-        }
-        return counter + position.column - 1
-    }
-
-    private _convertDiagnostics(resource: Uri, diag: import('typescript').Diagnostic): monaco.editor.IMarkerData {
-		const { lineNumber: startLineNumber, column: startColumn } = this.offsetToPosition(resource, diag.start);
-		const { lineNumber: endLineNumber, column: endColumn } = this.offsetToPosition(resource, diag.start + diag.length);
-
-		return {
-			severity: monaco.MarkerSeverity.Error,
-			startLineNumber,
-			startColumn,
-			endLineNumber,
-			endColumn,
-			message: flattenDiagnosticMessageText(diag.messageText, '\n')
-		};
-    }
-
-    private _extraFilesToCompileIdCounter = 0
-
-    async getModelMarkers(uri: monaco.Uri) {
-        this.assertNotDisposed();
-
-        let uriString = uri.toString();
-        let extname = path.extname(uriString);
-
-        if (extname === ".ts" || extname === ".tsx") {
-            var worker = await getTypescriptClient();
-            var defaults = typescriptDefaults;
-        } else if (extname === ".js" || extname === ".jsx") {
-            var worker = await getJavascriptClient();
-            var defaults = javascriptDefaults;
-        } else {
-            return [];
-        }
-
-        if (this.isDisposed) {
-            return;
-        }
-
-        let fileId = (this._extraFilesToCompileIdCounter++).toString()
-        worker.addExtraFileToCompile(this.id, fileId, uriString)
-
-        let diagnostics = await callTsFunction(() => {
-            setCurrentMultiFileProject(this.id);
-            const promises: Promise<import("typescript").Diagnostic[]>[] = [];
-            const { noSyntaxValidation, noSemanticValidation } = defaults.getDiagnosticsOptions();
-            if (!noSyntaxValidation) {
-                promises.push(worker.getSyntacticDiagnostics(uri.toString()));
-            }
-            if (!noSemanticValidation) {
-                promises.push(worker.getSemanticDiagnostics(uri.toString()));
-            }
-            return Promise.all(promises);
-        });
-
-        worker.removeExtraFileToCompile(this.id, fileId)
-
-        if (!diagnostics) {
             return null;
         }
 
-        return diagnostics.reduce((p, c) => c.concat(p), []).map(d => this._convertDiagnostics(uri, d));
+        if (offset > text.length) {
+            let numLines = (text.match(/\n/g) || []).length + 1;
+            return {
+                lineNumber: numLines,
+                column: text.length - text.lastIndexOf("\n")
+            };
+        }
+
+        let newLineIndex = text.lastIndexOf('\n', offset - 1)
+        if (newLineIndex === -1) {
+            return { lineNumber: 1, column: offset + 1 }
+        }
+        let lineNumber = (text.substring(0, offset).match(/\n/g) || []).length;
+
+        return { lineNumber: lineNumber + 1, column: offset - newLineIndex }
+    }
+
+    public positionToOffset(uri: Uri, position: monaco.IPosition): number {
+        let text = this._fileValues.get(uri.toString());
+
+        if (!text) {
+            return null;
+        }
+
+        let ln = position.lineNumber - 1;
+        let c = position.column - 1;
+
+        let line = 0
+        let previousIndex = -1
+        while (true) {
+            let nextIndex = text.indexOf('\n', previousIndex + 1)
+            if (line === ln) {
+                return Math.min(nextIndex, previousIndex + c + 1)
+            }
+            if (nextIndex < 0 || nextIndex > text.length) {
+                return text.length
+            }
+            line++
+            previousIndex = nextIndex
+        }
+    }
+
+    async calculateModelMarkers(uri: monaco.Uri) {
+        this.assertNotDisposed();
+
+        _onShouldValidate.fire({ project: this, uri })
     }
 
     getFileValue(filename: string) {

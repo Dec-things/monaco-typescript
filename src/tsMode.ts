@@ -51,8 +51,8 @@ function setupMode(
     modeId: string
 ): { client: WorkerManager; worker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker> } {
     const client = new WorkerManager(modeId, defaults)
-    const worker = (first: Uri, ...more: Uri[]): Promise<TypeScriptWorker> => {
-        return client.getLanguageServiceWorker(...[first].concat(more))
+    const worker = (): Promise<TypeScriptWorker> => {
+        return client.getLanguageServiceWorker()
     }
 
     monaco.languages.registerCompletionItemProvider(modeId, new languageFeatures.SuggestAdapter(worker))

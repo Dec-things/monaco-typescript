@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import { LanguageServiceDefaultsImpl, getTypescriptClient, getJavascriptClient } from './monaco.contribution';
+import { LanguageServiceDefaultsImpl } from './monaco.contribution';
 import * as ts from './lib/typescriptServices';
 import { TypeScriptWorker } from './tsWorker';
-import { onShouldValidate, isMultiFileMode, MultiFileProject, callTsFunction, multiFileProjects, setCurrentMultiFileProject, currentMultiFileProject } from './multiFileProject/multiFileProject'
+import { onShouldValidate, MultiFileProject, callTsFunction, multiFileProjects, setCurrentMultiFileProject, currentMultiFileProject, getCurrentMultiFileProject } from './multiFileProject/multiFileProject'
 
 import Uri = monaco.Uri;
 import Position = monaco.Position;
@@ -15,6 +15,7 @@ import Range = monaco.Range;
 import Thenable = monaco.Thenable;
 import CancellationToken = monaco.CancellationToken;
 import IDisposable = monaco.IDisposable;
+import { path } from './multiFileProject/path';
 
 //#region utils copied from typescript to prevent loading the entire typescriptServices ---
 
@@ -57,49 +58,24 @@ function displayPartsToString(displayParts: ts.SymbolDisplayPart[]): string {
 
 export abstract class Adapter {
 
-	constructor(protected _worker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker>) {
+	constructor(protected _worker: () => Promise<TypeScriptWorker>) {
 	}
 
 	protected _positionToOffset(uri: Uri, position: monaco.IPosition): number {
-		if (isMultiFileMode()) {
-			for (let project of multiFileProjects) {
-				if (project.id === currentMultiFileProject) {
-					return project.positionToOffset(uri, position) || 0
-				}
-			}
+		let project = getCurrentMultiFileProject()
+		if (!project) {
 			return 0
 		}
-		let model = monaco.editor.getModel(uri);
-		return model.getOffsetAt(position);
+		return project.positionToOffset(uri, position) || 0
 	}
 
 	protected _offsetToPosition(uri: Uri, offset: number): monaco.IPosition {
-		if (isMultiFileMode()) {
-			let text: string
-			for (let project of multiFileProjects) {
-				if (project.id === currentMultiFileProject) {
-					text = project.getFileValue(uri.toString())
-					break
-				}
-			}
-
-			if (!text) {
-				return { lineNumber: 1, column: 1 }
-			}
-
-			let lines = text.split('\n')
-			let counter = offset
-			for (let i = 0; i < lines.length; i++) {
-				let length = lines[i].length
-				if (counter <= length) {
-					return new monaco.Position(i + 1, counter + 1)
-				}
-				counter -= (length + 1)
-			}
-			return { lineNumber: lines.length, column: lines[lines.length - 1].length + 1 }
+		let project = getCurrentMultiFileProject()
+		if (!project) {
+			return { lineNumber: 1, column: 1 }
 		}
-		let model = monaco.editor.getModel(uri);
-		return model.getPositionAt(offset);
+
+		return project.offsetToPosition(uri, offset) || { lineNumber: 1, column: 1 }
 	}
 
 	protected _textSpanToRange(uri: Uri, span: ts.TextSpan): monaco.IRange {
@@ -116,85 +92,43 @@ export abstract class Adapter {
 export class DiagnostcsAdapter extends Adapter {
 
 	private _disposables: IDisposable[] = [];
-	private _listener: { [uri: string]: IDisposable } = Object.create(null);
 
 	constructor(private _defaults: LanguageServiceDefaultsImpl, private _selector: string,
-		worker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker>
+		worker: () => Promise<TypeScriptWorker>
 	) {
 		super(worker);
 
-		const onModelAdd = (model: monaco.editor.IModel): void => {
-			if (model.getModeId() !== _selector) {
-				return;
-			}
-
-			let handle: number;
-			const changeSubscription = model.onDidChangeContent(() => {
-				clearTimeout(handle);
-				if (!isMultiFileMode()) {
-					handle = setTimeout(() => this._doValidate(model.uri), 500);
-				}
-			});
-
-			this._listener[model.uri.toString()] = {
-				dispose() {
-					changeSubscription.dispose();
-					clearTimeout(handle);
-				}
-			};
-
-			if (!isMultiFileMode()) {
-				this._doValidate(model.uri);
-			}
-		};
-
-		const onModelRemoved = (model: monaco.editor.IModel): void => {
-			monaco.editor.setModelMarkers(model, this._selector, []);
-			const key = model.uri.toString();
-			if (this._listener[key]) {
-				this._listener[key].dispose();
-				delete this._listener[key];
-			}
-		};
-
-		this._disposables.push(monaco.editor.onDidCreateModel(onModelAdd));
-		this._disposables.push(monaco.editor.onWillDisposeModel(onModelRemoved));
-		this._disposables.push(monaco.editor.onDidChangeModelLanguage(event => {
-			onModelRemoved(event.model);
-			onModelAdd(event.model);
-		}));
-
-		this._disposables.push({
-			dispose() {
-				for (const model of monaco.editor.getModels()) {
-					onModelRemoved(model);
-				}
-			}
-		});
-
 		const recomputeDiagostics = () => {
-			// redo diagnostics when options change
-			for (const model of monaco.editor.getModels()) {
-				onModelRemoved(model);
-				onModelAdd(model);
+			for (const project of multiFileProjects) {
+				this._doValidate(project, project.currentFile)
 			}
 		};
 		this._disposables.push(this._defaults.onDidChange(recomputeDiagostics));
 		this._disposables.push(this._defaults.onDidExtraLibsChange(recomputeDiagostics));
 
-		monaco.editor.getModels().forEach(onModelAdd);
-
-		let validateProject = (project: MultiFileProject) => {
-			clearTimeout(timeoutMap.get(project))
-			timeoutMap.set(project, setTimeout(() => {
-				this._doValidate(project)
+		let validateProject = (project: MultiFileProject, uri: Uri) => {
+			let map = timeoutMap.get(project)
+			if (!map) {
+				map = new Map()
+				timeoutMap.set(project, map)
+			}
+			let uriString = uri.toString()
+			clearTimeout(map.get(uriString))
+			map.set(uriString, setTimeout(() => {
+				this._doValidate(project, uri)
 			}, 500))
 		}
 
 		// Subscribe to multiFileProject updates
-		let timeoutMap = new Map<MultiFileProject, number>()
-		this._disposables.push(onShouldValidate(validateProject))
-		multiFileProjects.forEach(validateProject)
+		let timeoutMap = new Map<MultiFileProject, Map<string, number>>()
+		this._disposables.push(onShouldValidate((ev) => {
+			validateProject(ev.project, ev.uri)
+		}))
+		multiFileProjects.forEach(project => {
+			if (project.currentFile) {
+				validateProject(project, project.currentFile)
+			}
+		})
 	}
 
 	public dispose(): void {
@@ -202,46 +136,51 @@ export class DiagnostcsAdapter extends Adapter {
 		this._disposables = [];
 	}
 
-	private _doValidate(resource: Uri | MultiFileProject): void {
-		if (resource instanceof MultiFileProject) {
-			if (!resource.currentFile) {
+	private _doValidate(resource: MultiFileProject, uri: Uri): void {
+		let uriString = uri.toString()
+		let extname = path.extname(uriString)
+		if (this._selector === 'typescript') {
+			if (extname !== '.ts' && extname !== '.tsx') {
 				return
 			}
-			var uri = resource.currentFile
 		}
 		else {
-			var uri = resource
-		}
-		this._worker(uri).then(worker => {
-			if (!monaco.editor.getModel(uri)) {
-				// model was disposed in the meantime
-				return null;
+			if (extname !== '.js' && extname !== '.jsx') {
+				return
 			}
+		}
+		this._worker().then(worker => {
 			return callTsFunction(() => {
-				if (resource instanceof MultiFileProject) {
-					setCurrentMultiFileProject(resource.id)
-				}
+				setCurrentMultiFileProject(resource.id)
 				const promises: Promise<ts.Diagnostic[]>[] = [];
 				const { noSyntaxValidation, noSemanticValidation } = this._defaults.getDiagnosticsOptions();
 				if (!noSyntaxValidation) {
-					promises.push(worker.getSyntacticDiagnostics(uri.toString()));
+					promises.push(worker.getSyntacticDiagnostics(uriString));
 				}
 				if (!noSemanticValidation) {
-					promises.push(worker.getSemanticDiagnostics(uri.toString()));
+					promises.push(worker.getSemanticDiagnostics(uriString));
 				}
 				return Promise.all(promises);
 			})
 		}).then(diagnostics => {
-			let model = monaco.editor.getModel(uri)
-			if (!diagnostics || !model || model.getModeId() !== this._selector) {
-				// model was disposed in the meantime
+			if (!diagnostics) {
+				let model = monaco.editor.getModel(uri)
+				if (model) {
+					monaco.editor.setModelMarkers(model, this._selector, [])
+				}
+				resource._onModelMarkers.fire({ uri, markers: null })
 				return null;
 			}
 			const markers = diagnostics
 				.reduce((p, c) => c.concat(p), [])
 				.map(d => this._convertDiagnostics(uri, d));
 
-			monaco.editor.setModelMarkers(monaco.editor.getModel(uri), this._selector, markers);
+			let model = monaco.editor.getModel(uri)
+			if (model) {
+				monaco.editor.setModelMarkers(model, this._selector, markers)
+			}
+
+			resource._onModelMarkers.fire({ uri, markers})
 		}).then(undefined, err => {
 			console.error(err);
 		});
@@ -281,7 +220,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const resource = model.uri;
 		const offset = this._positionToOffset(resource, position);
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getCompletionsAtPosition(resource.toString(), offset);
 			})
@@ -319,7 +258,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const resource = myItem.uri;
 		const position = myItem.position;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getCompletionEntryDetails(resource.toString(),
 				this._positionToOffset(resource, position),
@@ -382,7 +321,7 @@ export class SignatureHelpAdapter extends Adapter implements monaco.languages.Si
 
 	provideSignatureHelp(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.SignatureHelp> {
 		let resource = model.uri;
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getSignatureHelpItems(resource.toString(), this._positionToOffset(resource, position))
 			})
@@ -436,7 +375,7 @@ export class QuickInfoAdapter extends Adapter implements monaco.languages.HoverP
 	provideHover(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.Hover> {
 		let resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getQuickInfoAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
@@ -473,7 +412,7 @@ export class OccurrencesAdapter extends Adapter implements monaco.languages.Docu
 	public provideDocumentHighlights(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.DocumentHighlight[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getOccurrencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
@@ -498,7 +437,7 @@ export class DefinitionAdapter extends Adapter {
 	public provideDefinition(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.Definition> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getDefinitionAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
@@ -526,7 +465,7 @@ export class ReferenceAdapter extends Adapter implements monaco.languages.Refere
 	provideReferences(model: monaco.editor.IReadOnlyModel, position: Position, context: monaco.languages.ReferenceContext, token: CancellationToken): Thenable<monaco.languages.Location[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getReferencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
@@ -556,7 +495,7 @@ export class OutlineAdapter extends Adapter implements monaco.languages.Document
 	public provideDocumentSymbols(model: monaco.editor.IReadOnlyModel, token: CancellationToken): Thenable<monaco.languages.DocumentSymbol[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getNavigationBarItems(resource.toString())
 			})
@@ -674,7 +613,7 @@ export class FormatAdapter extends FormatHelper implements monaco.languages.Docu
 	provideDocumentRangeFormattingEdits(model: monaco.editor.IReadOnlyModel, range: Range, options: monaco.languages.FormattingOptions, token: CancellationToken): Thenable<monaco.editor.ISingleEditOperation[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getFormattingEditsForRange(resource.toString(),
 					this._positionToOffset(resource, { lineNumber: range.startLineNumber, column: range.startColumn }),
@@ -699,7 +638,7 @@ export class FormatOnTypeAdapter extends FormatHelper implements monaco.language
 	provideOnTypeFormattingEdits(model: monaco.editor.IReadOnlyModel, position: Position, ch: string, options: monaco.languages.FormattingOptions, token: CancellationToken): Thenable<monaco.editor.ISingleEditOperation[]> {
 		const resource = model.uri;
 
-		return this._worker(resource).then(worker => {
+		return this._worker().then(worker => {
 			return callTsFunction(() => {
 				return worker.getFormattingEditsAfterKeystroke(resource.toString(),
 					this._positionToOffset(resource, position),

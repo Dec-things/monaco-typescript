@@ -105,24 +105,24 @@ export class WorkerManager {
 
 				let client = await this._worker.getProxy()
 
-				async function register(project: MultiFileProject) {
-                    let dir = await project.fs.readAllDirs();
-                    if (cancelled || project.isDisposed) {
-                        return;
-                    }
-                    client.registerMultiFileProject(project.id, project.currentFile.toString(), dir.map((element) => { return { uri: element.uri.toString(), value: element.value } }), project.extraLib);
-                }
-                await Promise.all(
-                    multiFileProjects.map(project => {
-                        return register(project);
-                    })
-				);
-				if (currentMultiFileProject) {
-					await client.setCurrentMultiFileProject(currentMultiFileProject)
+				function register(project: MultiFileProject, dirs: { uri: Uri, value: string }[]) {
+                    client.registerMultiFileProject(project.id, project.currentFile ? project.currentFile.toString() : null, dirs.map((element) => { return { uri: element.uri.toString(), value: element.value } }), project.extraLib);
 				}
-                let onCreatedListener = onMultiFileProjectCreated(project => {
-                    register(project);
+
+				let onCreatedListener = onMultiFileProjectCreated(project => {
+					project.register().then(dirs => {
+						register(project, dirs)
+					})
 				});
+				await Promise.all(multiFileProjects.map(project => {
+					return project.register().then(dirs => {
+						register(project, dirs);
+					})
+				}))
+
+				if (currentMultiFileProject) {
+					client.setCurrentMultiFileProject(currentMultiFileProject)
+				}
 
 				resolve(client)
 			})
@@ -142,12 +142,7 @@ export class WorkerManager {
 		return this.client;
 	}
 
-	getLanguageServiceWorker(...resources: Uri[]): Promise<TypeScriptWorker> {
-		let _client: TypeScriptWorker;
-		return this._getClient().then((client) => {
-			_client = client
-		}).then(_ => {
-			return this._worker.withSyncedResources(resources)
-		}).then(_ => _client);
+	getLanguageServiceWorker(): Promise<TypeScriptWorker> {
+		return this._getClient()
 	}
 }
