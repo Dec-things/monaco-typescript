@@ -8,25 +8,43 @@ export const multiFileProjects: MultiFileProject[] = [];
 const _onMultiFileProjectCreated = new Emitter<MultiFileProject>();
 export const onMultiFileProjectCreated = _onMultiFileProjectCreated.event;
 
-const _onShouldValidate = new Emitter<{ project: MultiFileProject, uri: monaco.Uri }>();
-export const onShouldValidate = _onShouldValidate.event;
+const _onShouldValidateTypescript = new Emitter<{ project: MultiFileProject, uri: monaco.Uri }>();
+export const onShouldValidateTypescript = _onShouldValidateTypescript.event;
+const _onShouldValidateJavascript = new Emitter<{ project: MultiFileProject, uri: monaco.Uri }>();
+export const onShouldValidateJavacript = _onShouldValidateJavascript.event;
 
-let tsUpdatePromise: Promise<void>;
+let tsUpdatePromise: { typescript: Promise<any>, javascript: Promise<any> } = { typescript: null, javascript: null };
 /**
  * Higher-order function for calling a function on the Typescript worker.
  *
  * This function makes sure to call the given function until the worker does not report that it needs to update.
  */
-export async function callTsFunction<T = any>(f: () => Promise<T> | T): Promise<T> {
+export async function callWorkerFunction<T = any>(selector: 'typescript' | 'javascript', f: () => Promise<T> | T): Promise<T> {
     let first = true;
-    while (first || tsUpdatePromise) {
+    while (first || tsUpdatePromise[selector]) {
         first = false;
-        await tsUpdatePromise;
-        if (!tsUpdatePromise) {
+        await tsUpdatePromise[selector];
+        if (!tsUpdatePromise[selector]) {
             var response = await f();
         }
     }
     return response;
+}
+
+/**
+ * Interupt the worker until the given promise resolves. This will delay any pending worker functions until the promise is complete.
+ */
+async function interuptWorker(selector: 'typescript' | 'javascript', promise: Promise<any>) {
+    if (tsUpdatePromise[selector]) {
+        var _promise = tsUpdatePromise[selector].then(() => promise);
+    } else {
+        var _promise = promise;
+    }
+    tsUpdatePromise[selector] = _promise;
+    await _promise;
+    if (tsUpdatePromise[selector] === _promise) {
+        tsUpdatePromise[selector] = null;
+    }
 }
 
 onRequestReadFile(async params => {
@@ -37,7 +55,7 @@ onRequestReadFile(async params => {
 
         let uri = monaco.Uri.parse(params.filename);
 
-        let promise = new Promise<any>(async resolve => {
+        let promise = new Promise<void>(async resolve => {
             let value = await project.fs.readFile(uri);
             if (project.isDisposed) {
                 resolve();
@@ -55,16 +73,7 @@ onRequestReadFile(async params => {
             resolve();
         });
 
-        if (tsUpdatePromise) {
-            var _promise = tsUpdatePromise.then(() => promise);
-        } else {
-            var _promise = promise;
-        }
-        tsUpdatePromise = _promise;
-        await _promise;
-        if (tsUpdatePromise === _promise) {
-            tsUpdatePromise = null;
-        }
+        interuptWorker(params.mode, promise)
     }
 });
 
@@ -78,8 +87,22 @@ export function createMultiFileProject(fs: {
 export let currentMultiFileProject: string = null;
 export function setCurrentMultiFileProject(id: string) {
     currentMultiFileProject = id;
-    getTypescriptClient().then(client => client && client.setCurrentMultiFileProject(id));
-    getJavascriptClient().then(client => client && client.setCurrentMultiFileProject(id));
+    let tsPromise = new Promise(async resolve => {
+        let tsClient = await getTypescriptClient()
+        if (tsClient) {
+            tsClient.setCurrentMultiFileProject(id)
+        }
+        resolve()
+    })
+    let jsPromise = new Promise(async resolve => {
+        let jsClient = await getJavascriptClient()
+        if (jsClient) {
+            jsClient.setCurrentMultiFileProject(id)
+        }
+        resolve()
+    })
+    interuptWorker('typescript', tsPromise)
+    interuptWorker('javascript', jsPromise)
 }
 
 export function getCurrentMultiFileProject() {
@@ -145,6 +168,8 @@ export class MultiFileProject {
             }
             resolve(dirs)
         });
+        interuptWorker('javascript', this._registerPromise)
+        interuptWorker('typescript', this._registerPromise)
         return this._registerPromise
     }
 
@@ -158,25 +183,47 @@ export class MultiFileProject {
 
         this._fileValues.set(uriString, value);
 
-        await this.awaitRegister()
+        let tsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let tsWorker = await getTypescriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (tsWorker) {
+                tsWorker.setFile(this.id, uriString, value);
+                _onShouldValidateTypescript.fire({ project: this, uri: this.currentFile })
+            }
 
-        let tsWorker = await getTypescriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (tsWorker) {
-            tsWorker.setFile(this.id, uriString, value);
-        }
-        let jsWorker = await getJavascriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (jsWorker) {
-            jsWorker.setFile(this.id, uriString, value);
-        }
-        if (this.currentFile) {
-            _onShouldValidate.fire({ project: this, uri: this.currentFile });
-        }
+            resolve()
+        })
+        interuptWorker('typescript', tsPromise)
+
+        let jsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let jsWorker = await getJavascriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (jsWorker) {
+                jsWorker.setFile(this.id, uriString, value);
+                _onShouldValidateJavascript.fire({ project: this, uri: this.currentFile })
+            }
+
+            resolve()
+        })
+        interuptWorker('javascript', jsPromise)
+
+        await Promise.all([tsPromise, jsPromise])
     }
 
     /**
@@ -187,28 +234,49 @@ export class MultiFileProject {
 
         let uriString = uri.toString();
 
-        await this.awaitRegister()
+        let tsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let tsWorker = await getTypescriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (tsWorker) {
+                tsWorker.rmFile(this.id, uriString);
+                _onShouldValidateTypescript.fire({ project: this, uri: this.currentFile })
+            }
 
-        let tsWorker = await getTypescriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (tsWorker) {
-            tsWorker.rmFile(this.id, uri.toString());
-        }
-        let jsWorker = await getJavascriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (jsWorker) {
-            jsWorker.rmFile(this.id, uri.toString());
-        }
+            resolve()
+        })
+        interuptWorker('typescript', tsPromise)
+
+        let jsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let jsWorker = await getJavascriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (jsWorker) {
+                jsWorker.rmFile(this.id, uriString);
+                _onShouldValidateJavascript.fire({ project: this, uri: this.currentFile })
+            }
+
+            resolve()
+        })
+        interuptWorker('javascript', jsPromise)
+
+        await Promise.all([tsPromise, jsPromise])
 
         this._fileValues.delete(uriString);
-
-        if (this.currentFile) {
-            _onShouldValidate.fire({ project: this, uri: this.currentFile });
-        }
     }
 
     /**
@@ -221,26 +289,47 @@ export class MultiFileProject {
 
         this._currentFile = uri || null;
 
-        await this.awaitRegister()
+        let tsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let tsWorker = await getTypescriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (tsWorker) {
+                tsWorker.setCurrentFile(this.id, uriString);
+                _onShouldValidateTypescript.fire({ project: this, uri: this.currentFile })
+            }
 
-        let tsWorker = await getTypescriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (tsWorker) {
-            tsWorker.setCurrentFile(this.id, uriString);
-        }
-        let jsWorker = await getJavascriptClient();
-        if (this.isDisposed) {
-            return;
-        }
-        if (jsWorker) {
-            jsWorker.setCurrentFile(this.id, uriString);
-        }
+            resolve()
+        })
+        interuptWorker('typescript', tsPromise)
 
-        if (this.currentFile) {
-            _onShouldValidate.fire({ project: this, uri: this.currentFile });
-        }
+        let jsPromise = new Promise(async resolve => {
+            await this.awaitRegister()
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            let jsWorker = await getJavascriptClient();
+            if (this.isDisposed) {
+                resolve()
+                return;
+            }
+            if (jsWorker) {
+                jsWorker.setCurrentFile(this.id, uriString);
+                _onShouldValidateJavascript.fire({ project: this, uri: this.currentFile })
+            }
+
+            resolve()
+        })
+        interuptWorker('javascript', jsPromise)
+
+        await Promise.all([tsPromise, jsPromise])
     }
 
     public offsetToPosition(uri: Uri, offset: number): monaco.IPosition {
@@ -295,7 +384,8 @@ export class MultiFileProject {
     async calculateModelMarkers(uri: monaco.Uri) {
         this.assertNotDisposed();
 
-        _onShouldValidate.fire({ project: this, uri })
+        _onShouldValidateTypescript.fire({ project: this, uri })
+        _onShouldValidateJavascript.fire({ project: this, uri })
     }
 
     getFileValue(filename: string) {

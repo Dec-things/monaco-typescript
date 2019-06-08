@@ -116,6 +116,9 @@ export class WorkerManager {
 				});
 				await Promise.all(multiFileProjects.map(project => {
 					return project.register().then(dirs => {
+						if (cancelled) {
+							return
+						}
 						register(project, dirs);
 					})
 				}))

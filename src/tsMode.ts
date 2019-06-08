@@ -48,22 +48,22 @@ export function getTypeScriptWorker(): Promise<(first: Uri, ...more: Uri[]) => P
 
 function setupMode(
     defaults: LanguageServiceDefaultsImpl,
-    modeId: string
+    modeId: 'typescript' | 'javascript'
 ): { client: WorkerManager; worker: (first: Uri, ...more: Uri[]) => Promise<TypeScriptWorker> } {
     const client = new WorkerManager(modeId, defaults)
     const worker = (): Promise<TypeScriptWorker> => {
         return client.getLanguageServiceWorker()
     }
 
-    monaco.languages.registerCompletionItemProvider(modeId, new languageFeatures.SuggestAdapter(worker))
-    monaco.languages.registerSignatureHelpProvider(modeId, new languageFeatures.SignatureHelpAdapter(worker))
-    monaco.languages.registerHoverProvider(modeId, new languageFeatures.QuickInfoAdapter(worker))
-    monaco.languages.registerDocumentHighlightProvider(modeId, new languageFeatures.OccurrencesAdapter(worker))
-    monaco.languages.registerDefinitionProvider(modeId, new languageFeatures.DefinitionAdapter(worker))
-    monaco.languages.registerReferenceProvider(modeId, new languageFeatures.ReferenceAdapter(worker))
-    monaco.languages.registerDocumentSymbolProvider(modeId, new languageFeatures.OutlineAdapter(worker))
-    monaco.languages.registerDocumentRangeFormattingEditProvider(modeId, new languageFeatures.FormatAdapter(worker))
-    monaco.languages.registerOnTypeFormattingEditProvider(modeId, new languageFeatures.FormatOnTypeAdapter(worker))
+    monaco.languages.registerCompletionItemProvider(modeId, new languageFeatures.SuggestAdapter(worker, modeId))
+    monaco.languages.registerSignatureHelpProvider(modeId, new languageFeatures.SignatureHelpAdapter(worker, modeId))
+    monaco.languages.registerHoverProvider(modeId, new languageFeatures.QuickInfoAdapter(worker, modeId))
+    monaco.languages.registerDocumentHighlightProvider(modeId, new languageFeatures.OccurrencesAdapter(worker, modeId))
+    monaco.languages.registerDefinitionProvider(modeId, new languageFeatures.DefinitionAdapter(worker, modeId))
+    monaco.languages.registerReferenceProvider(modeId, new languageFeatures.ReferenceAdapter(worker, modeId))
+    monaco.languages.registerDocumentSymbolProvider(modeId, new languageFeatures.OutlineAdapter(worker, modeId))
+    monaco.languages.registerDocumentRangeFormattingEditProvider(modeId, new languageFeatures.FormatAdapter(worker, modeId))
+    monaco.languages.registerOnTypeFormattingEditProvider(modeId, new languageFeatures.FormatOnTypeAdapter(worker, modeId))
     new languageFeatures.DiagnostcsAdapter(defaults, modeId, worker)
 
     return { client, worker }

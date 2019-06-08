@@ -7,7 +7,7 @@
 import { LanguageServiceDefaultsImpl } from './monaco.contribution';
 import * as ts from './lib/typescriptServices';
 import { TypeScriptWorker } from './tsWorker';
-import { onShouldValidate, MultiFileProject, callTsFunction, multiFileProjects, setCurrentMultiFileProject, currentMultiFileProject, getCurrentMultiFileProject } from './multiFileProject/multiFileProject'
+import { onShouldValidateJavacript, onShouldValidateTypescript, MultiFileProject, callWorkerFunction, multiFileProjects, setCurrentMultiFileProject, currentMultiFileProject, getCurrentMultiFileProject } from './multiFileProject/multiFileProject'
 
 import Uri = monaco.Uri;
 import Position = monaco.Position;
@@ -58,7 +58,7 @@ function displayPartsToString(displayParts: ts.SymbolDisplayPart[]): string {
 
 export abstract class Adapter {
 
-	constructor(protected _worker: () => Promise<TypeScriptWorker>) {
+	constructor(protected _worker: () => Promise<TypeScriptWorker>, protected _selector: 'typescript' | 'javascript') {
 	}
 
 	protected _positionToOffset(uri: Uri, position: monaco.IPosition): number {
@@ -93,10 +93,10 @@ export class DiagnostcsAdapter extends Adapter {
 
 	private _disposables: IDisposable[] = [];
 
-	constructor(private _defaults: LanguageServiceDefaultsImpl, private _selector: string,
+	constructor(private _defaults: LanguageServiceDefaultsImpl, _selector: 'typescript' | 'javascript',
 		worker: () => Promise<TypeScriptWorker>
 	) {
-		super(worker);
+		super(worker, _selector);
 
 		const recomputeDiagostics = () => {
 			for (const project of multiFileProjects) {
@@ -117,6 +117,13 @@ export class DiagnostcsAdapter extends Adapter {
 			map.set(uriString, setTimeout(() => {
 				this._doValidate(project, uri)
 			}, 500))
+		}
+
+		if (this._selector === 'typescript') {
+			var onShouldValidate = onShouldValidateTypescript
+		}
+		else {
+			var onShouldValidate = onShouldValidateJavacript
 		}
 
 		// Subscribe to multiFileProject updates
@@ -150,7 +157,7 @@ export class DiagnostcsAdapter extends Adapter {
 			}
 		}
 		this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				setCurrentMultiFileProject(resource.id)
 				const promises: Promise<ts.Diagnostic[]>[] = [];
 				const { noSyntaxValidation, noSemanticValidation } = this._defaults.getDiagnosticsOptions();
@@ -221,7 +228,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const offset = this._positionToOffset(resource, position);
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getCompletionsAtPosition(resource.toString(), offset);
 			})
 		}).then(info => {
@@ -259,7 +266,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 		const position = myItem.position;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getCompletionEntryDetails(resource.toString(),
 				this._positionToOffset(resource, position),
 				myItem.label);
@@ -322,7 +329,7 @@ export class SignatureHelpAdapter extends Adapter implements monaco.languages.Si
 	provideSignatureHelp(model: monaco.editor.IReadOnlyModel, position: Position, token: CancellationToken): Thenable<monaco.languages.SignatureHelp> {
 		let resource = model.uri;
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getSignatureHelpItems(resource.toString(), this._positionToOffset(resource, position))
 			})
 		}).then(info => {
@@ -376,7 +383,7 @@ export class QuickInfoAdapter extends Adapter implements monaco.languages.HoverP
 		let resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getQuickInfoAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
 		}).then(info => {
@@ -413,7 +420,7 @@ export class OccurrencesAdapter extends Adapter implements monaco.languages.Docu
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getOccurrencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
@@ -438,7 +445,7 @@ export class DefinitionAdapter extends Adapter {
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getDefinitionAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
@@ -466,7 +473,7 @@ export class ReferenceAdapter extends Adapter implements monaco.languages.Refere
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getReferencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
@@ -496,7 +503,7 @@ export class OutlineAdapter extends Adapter implements monaco.languages.Document
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getNavigationBarItems(resource.toString())
 			})
 		}).then(items => {
@@ -614,7 +621,7 @@ export class FormatAdapter extends FormatHelper implements monaco.languages.Docu
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getFormattingEditsForRange(resource.toString(),
 					this._positionToOffset(resource, { lineNumber: range.startLineNumber, column: range.startColumn }),
 					this._positionToOffset(resource, { lineNumber: range.endLineNumber, column: range.endColumn }),
@@ -639,7 +646,7 @@ export class FormatOnTypeAdapter extends FormatHelper implements monaco.language
 		const resource = model.uri;
 
 		return this._worker().then(worker => {
-			return callTsFunction(() => {
+			return callWorkerFunction(this._selector, () => {
 				return worker.getFormattingEditsAfterKeystroke(resource.toString(),
 					this._positionToOffset(resource, position),
 					ch, FormatHelper._convertOptions(options));
