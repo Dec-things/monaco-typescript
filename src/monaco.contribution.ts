@@ -253,7 +253,7 @@ export function getJavascriptClient(): Promise<TypeScriptWorker> {
         if (!jsWorkerManagerPromise) {
             return Promise.resolve(null);
         }
-        return jsWorkerManagerPromise.then(_ => tsWorkerManager.client)
+        return jsWorkerManagerPromise.then(_ => jsWorkerManager.client)
     }
     return jsWorkerManager.client || Promise.resolve(null)
 }
