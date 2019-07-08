@@ -49,7 +49,12 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     >();
     private _currentMultiFileProject: string = null;
 
-    registerMultiFileProject(id: string, currentFile: string, dir: { uri: string, value: string }[], extraLib: string): Promise<void> {
+    registerMultiFileProject(
+        id: string,
+        currentFile: string,
+        dir: { uri: string; value: string }[],
+        extraLib: string
+    ): Promise<void> {
         this._multiFileProjects.set(id, {
             fs: new WorkerFileSystem(dir),
             extraLib,
@@ -99,12 +104,12 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
 
     addExtraFileToCompile(id: string, fileId: string, filename: string) {
         let project = this._multiFileProjects.get(id);
-        project.extraFilesToCompile.set(fileId, filename)
+        project.extraFilesToCompile.set(fileId, filename);
     }
 
     removeExtraFileToCompile(id: string, fileId: string) {
         let project = this._multiFileProjects.get(id);
-        project.extraFilesToCompile.delete(fileId)
+        project.extraFilesToCompile.delete(fileId);
     }
 
     // --- language service host ---------------
@@ -116,15 +121,15 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     getScriptFileNames(): string[] {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            let set = new Set<string>()
+            let set = new Set<string>();
             if (project.currentFile) {
-                set.add(project.currentFile)
+                set.add(project.currentFile);
             }
-            project.extraFilesToCompile.forEach((value) => {
+            project.extraFilesToCompile.forEach(value => {
                 set.add(value);
             });
             let arr = [];
-            set.forEach(element => arr.push(element))
+            set.forEach(element => arr.push(element));
             return arr;
         } else {
             let models = this._ctx.getMirrorModels().map(model => model.uri.toString());
@@ -134,7 +139,7 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
 
     private _getModel(fileName: string): monaco.worker.IMirrorModel {
         let models = this._ctx.getMirrorModels();
-		for (let i = 0; i < models.length; i++) {
+        for (let i = 0; i < models.length; i++) {
             if (models[i].uri.toString() === fileName) {
                 return models[i];
             }
@@ -167,28 +172,28 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
         let text: string;
 
         if (this._currentMultiFileProject) {
-            let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            let file = project.fs.getFile(fileName);
-            if (file.notFound) {
-                if (fileName === DEFAULT_LIB.NAME) {
-                    text = DEFAULT_LIB.CONTENTS;
-                } else if (fileName === ES6_LIB.NAME) {
-                    text = ES6_LIB.CONTENTS;
-                } else {
-                    throw new Error("In ts-worker file system: The file wasn't found.");
-                }
-            } else if (file.notLoaded) {
-                (postMessage as any)(
-                    JSON.stringify({
-                        shouldBeIntercepted: true,
-                        method: "readFile",
-                        id: this._currentMultiFileProject,
-                        filename: fileName
-                    })
-                );
-                text = "";
+            if (fileName === DEFAULT_LIB.NAME) {
+                text = DEFAULT_LIB.CONTENTS;
+            } else if (fileName === ES6_LIB.NAME) {
+                text = ES6_LIB.CONTENTS;
             } else {
-                text = file.value;
+                let project = this._multiFileProjects.get(this._currentMultiFileProject);
+                let file = project.fs.getFile(fileName);
+                if (file.notFound) {
+                    throw new Error("In ts-worker file system: The file wasn't found.");
+                } else if (file.notLoaded) {
+                    (postMessage as any)(
+                        JSON.stringify({
+                            shouldBeIntercepted: true,
+                            method: "readFile",
+                            id: this._currentMultiFileProject,
+                            filename: fileName
+                        })
+                    );
+                    text = "";
+                } else {
+                    text = file.value;
+                }
             }
         } else {
             let model = this._getModel(fileName);
@@ -246,33 +251,33 @@ export class TypeScriptWorker implements ts.LanguageServiceHost {
     fileExists(filename: string) {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            return project.fs.exists(filename)
+            return project.fs.exists(filename);
         }
-        throw "Bla"
+        return false;
     }
 
     directoryExists(directoryName: string) {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            return project.fs.directoryExists(directoryName)
+            return project.fs.directoryExists(directoryName);
         }
-        throw "Bla"
+        return false;
     }
 
     getDirectories(directoryName: string) {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            return project.fs.getDirectories(directoryName)
+            return project.fs.getDirectories(directoryName);
         }
-        throw "Bla"
+        return [];
     }
 
     readDirectory(path: string, extensions: string[], exclude?: string[], include?: string[], depth?: number) {
         if (this._currentMultiFileProject) {
             let project = this._multiFileProjects.get(this._currentMultiFileProject);
-            return project.fs.readDirectory(path, extensions, exclude, include, depth)
+            return project.fs.readDirectory(path, extensions, exclude, include, depth);
         }
-        throw "Bla"
+        return [];
     }
 
     // --- language features

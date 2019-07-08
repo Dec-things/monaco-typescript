@@ -106,7 +106,7 @@ export class WorkerManager {
 				let client = await this._worker.getProxy()
 
 				function register(project: MultiFileProject, dirs: { uri: Uri, value: string }[]) {
-                    client.registerMultiFileProject(project.id, project.currentFile ? project.currentFile.toString() : null, dirs.map((element) => { return { uri: element.uri.toString(), value: element.value } }), project.extraLib);
+                    client.registerMultiFileProject(project.id, project.currentFile ? project.currentFile.toString(true) : null, dirs.map((element) => { return { uri: element.uri.toString(true), value: element.value } }), project.extraLib);
 				}
 
 				let onCreatedListener = onMultiFileProjectCreated(project => {

@@ -112,7 +112,7 @@ export class DiagnostcsAdapter extends Adapter {
 				map = new Map()
 				timeoutMap.set(project, map)
 			}
-			let uriString = uri.toString()
+			let uriString = uri.toString(true)
 			clearTimeout(map.get(uriString))
 			map.set(uriString, setTimeout(() => {
 				this._doValidate(project, uri)
@@ -144,7 +144,7 @@ export class DiagnostcsAdapter extends Adapter {
 	}
 
 	private _doValidate(resource: MultiFileProject, uri: Uri): void {
-		let uriString = uri.toString()
+		let uriString = uri.toString(true)
 		let extname = path.extname(uriString)
 		if (this._selector === 'typescript') {
 			if (extname !== '.ts' && extname !== '.tsx') {
@@ -229,7 +229,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getCompletionsAtPosition(resource.toString(), offset);
+				return worker.getCompletionsAtPosition(resource.toString(true), offset);
 			})
 		}).then(info => {
 			if (!info) {
@@ -267,7 +267,7 @@ export class SuggestAdapter extends Adapter implements monaco.languages.Completi
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getCompletionEntryDetails(resource.toString(),
+				return worker.getCompletionEntryDetails(resource.toString(true),
 				this._positionToOffset(resource, position),
 				myItem.label);
 			})
@@ -330,7 +330,7 @@ export class SignatureHelpAdapter extends Adapter implements monaco.languages.Si
 		let resource = model.uri;
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getSignatureHelpItems(resource.toString(), this._positionToOffset(resource, position))
+				return worker.getSignatureHelpItems(resource.toString(true), this._positionToOffset(resource, position))
 			})
 		}).then(info => {
 
@@ -384,7 +384,7 @@ export class QuickInfoAdapter extends Adapter implements monaco.languages.HoverP
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getQuickInfoAtPosition(resource.toString(), this._positionToOffset(resource, position));
+				return worker.getQuickInfoAtPosition(resource.toString(true), this._positionToOffset(resource, position));
 			})
 		}).then(info => {
 			if (!info) {
@@ -421,7 +421,7 @@ export class OccurrencesAdapter extends Adapter implements monaco.languages.Docu
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getOccurrencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+				return worker.getOccurrencesAtPosition(resource.toString(true), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
 			if (!entries) {
@@ -446,7 +446,7 @@ export class DefinitionAdapter extends Adapter {
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getDefinitionAtPosition(resource.toString(), this._positionToOffset(resource, position));
+				return worker.getDefinitionAtPosition(resource.toString(true), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
 			if (!entries) {
@@ -474,7 +474,7 @@ export class ReferenceAdapter extends Adapter implements monaco.languages.Refere
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getReferencesAtPosition(resource.toString(), this._positionToOffset(resource, position));
+				return worker.getReferencesAtPosition(resource.toString(true), this._positionToOffset(resource, position));
 			})
 		}).then(entries => {
 			if (!entries) {
@@ -504,7 +504,7 @@ export class OutlineAdapter extends Adapter implements monaco.languages.Document
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getNavigationBarItems(resource.toString())
+				return worker.getNavigationBarItems(resource.toString(true))
 			})
 		}).then(items => {
 			if (!items) {
@@ -622,7 +622,7 @@ export class FormatAdapter extends FormatHelper implements monaco.languages.Docu
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getFormattingEditsForRange(resource.toString(),
+				return worker.getFormattingEditsForRange(resource.toString(true),
 					this._positionToOffset(resource, { lineNumber: range.startLineNumber, column: range.startColumn }),
 					this._positionToOffset(resource, { lineNumber: range.endLineNumber, column: range.endColumn }),
 					FormatHelper._convertOptions(options)
@@ -647,7 +647,7 @@ export class FormatOnTypeAdapter extends FormatHelper implements monaco.language
 
 		return this._worker().then(worker => {
 			return callWorkerFunction(this._selector, () => {
-				return worker.getFormattingEditsAfterKeystroke(resource.toString(),
+				return worker.getFormattingEditsAfterKeystroke(resource.toString(true),
 					this._positionToOffset(resource, position),
 					ch, FormatHelper._convertOptions(options));
 			})

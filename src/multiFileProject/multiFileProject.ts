@@ -61,7 +61,7 @@ onRequestReadFile(async params => {
                 resolve();
                 return;
             }
-            (project as any)._fileValues.set(uri.toString(), value);
+            (project as any)._fileValues.set(uri.toString(true), value);
             if (params.mode === "typescript") {
                 var worker = await getTypescriptClient();
             } else {
@@ -179,7 +179,7 @@ export class MultiFileProject {
     async writeFile(uri: Uri, value: string) {
         this.assertNotDisposed();
 
-        let uriString = uri.toString();
+        let uriString = uri.toString(true);
 
         this._fileValues.set(uriString, value);
 
@@ -232,7 +232,7 @@ export class MultiFileProject {
     async rmFile(uri: monaco.Uri) {
         this.assertNotDisposed();
 
-        let uriString = uri.toString();
+        let uriString = uri.toString(true);
 
         let tsPromise = new Promise(async resolve => {
             await this.awaitRegister()
@@ -285,7 +285,7 @@ export class MultiFileProject {
     async setCurrentFile(uri: monaco.Uri) {
         this.assertNotDisposed();
 
-        let uriString = uri ? uri.toString() : null;
+        let uriString = uri ? uri.toString(true) : null;
 
         this._currentFile = uri || null;
 
@@ -333,7 +333,7 @@ export class MultiFileProject {
     }
 
     public offsetToPosition(uri: Uri, offset: number): monaco.IPosition {
-        let text = this._fileValues.get(uri.toString());
+        let text = this._fileValues.get(uri.toString(true));
 
         if (!text) {
             return null;
@@ -357,7 +357,7 @@ export class MultiFileProject {
     }
 
     public positionToOffset(uri: Uri, position: monaco.IPosition): number {
-        let text = this._fileValues.get(uri.toString());
+        let text = this._fileValues.get(uri.toString(true));
 
         if (!text) {
             return null;
